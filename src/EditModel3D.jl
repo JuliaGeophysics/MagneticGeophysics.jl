@@ -340,6 +340,29 @@ function _edit_depth_slice_viewer(
     )
 end
 
+# a cell an edit may change: earth, and not fixed (lake water, mask 9, non-magnetic, κ = 0)
+_editable(A, fixed, i, j, k) = !isnan(A[i, j, k]) && (fixed === nothing || !fixed[i, j, k])
+
+# water cells of `model_file`: from `mask_file`, else `<stem>.mask` or `model.mask` beside it when on the same mesh
+function _edit_fixed_cells(model_file::AbstractString, M, mask_file::AbstractString)
+    candidates = isempty(mask_file) ? [splitext(model_file)[1] * ".mask", joinpath(dirname(abspath(model_file)), "model.mask")] :
+                                      [mask_file]
+    for f in candidates
+        isfile(f) || continue
+        W = try
+            water_mask(f, M)
+        catch err
+            isempty(mask_file) || rethrow()
+            err isa ArgumentError || rethrow()
+            continue                                            # a mask of another mesh beside the model
+        end
+        any(W) && println("  Water cells kept as they are: $(count(W)) (mask 9 in $(basename(f)))")
+        return W
+    end
+    isempty(mask_file) || error("mask file not found: $mask_file")
+    return nothing
+end
+
 function get_scope_indices(M; replace_scope::Symbol = :core_only)
     if replace_scope == :full_model
         ix = 1:M.nx
@@ -355,16 +378,16 @@ function get_scope_indices(M; replace_scope::Symbol = :core_only)
     return ix, iy, scope_label
 end
 
-function apply_susceptibility_on_scope!(A::Array{<:Real,3}, ix, iy, k::Int, target_susceptibility::Real)
+function apply_susceptibility_on_scope!(A::Array{<:Real,3}, ix, iy, k::Int, target_susceptibility::Real; fixed = nothing)
     for j in iy, i in ix
-        isnan(A[i, j, k]) || (A[i, j, k] = target_susceptibility)     # air stays air
+        _editable(A, fixed, i, j, k) && (A[i, j, k] = target_susceptibility)     # air and water stay
     end
     return A
 end
 
-function blend_susceptibility_on_scope!(A::Array{<:Real,3}, ix, iy, k::Int, weight::Real, target_susceptibility::Real)
+function blend_susceptibility_on_scope!(A::Array{<:Real,3}, ix, iy, k::Int, weight::Real, target_susceptibility::Real; fixed = nothing)
     for j in iy, i in ix
-        isnan(A[i, j, k]) || (A[i, j, k] = (1 - weight) * A[i, j, k] + weight * target_susceptibility)
+        _editable(A, fixed, i, j, k) && (A[i, j, k] = (1 - weight) * A[i, j, k] + weight * target_susceptibility)
     end
     return A
 end
@@ -373,7 +396,8 @@ function modify_deep_susceptibility!(A::Array{<:Real,3}, M;
                                    cutoff_layer::Int = 1,
                                    target_susceptibility::Real = 0.01,
                                    blend_previous_percent::Int = 0,
-                                   replace_scope::Symbol = :core_only)
+                                   replace_scope::Symbol = :core_only,
+                                   fixed = nothing)
     nz = size(A, 3)
 
     if cutoff_layer < 1 || cutoff_layer > nz
@@ -394,12 +418,12 @@ function modify_deep_susceptibility!(A::Array{<:Real,3}, M;
     if blend_previous_percent > 0 && cutoff_layer > 1
         blend_weight = blend_previous_percent / 100
         previous_layer = cutoff_layer - 1
-        blend_susceptibility_on_scope!(A, ix, iy, previous_layer, blend_weight, target_susceptibility)
+        blend_susceptibility_on_scope!(A, ix, iy, previous_layer, blend_weight, target_susceptibility; fixed)
         println("  Blended layer $(previous_layer) with weight $(round(blend_weight, digits = 3))")
     end
 
     for k in cutoff_layer:nz
-        apply_susceptibility_on_scope!(A, ix, iy, k, target_susceptibility)
+        apply_susceptibility_on_scope!(A, ix, iy, k, target_susceptibility; fixed)
     end
     println("  Replaced layers $(cutoff_layer) - $(nz) with target value")
 
@@ -429,7 +453,7 @@ function write_modified_model_with_metadata(outputfile::AbstractString, M, A_mod
                                             target_susceptibility::Real,
                                             blend_previous_percent::Int,
                                             replace_scope::Symbol)
-    edited = Model(M.dx, M.dy, M.dz, A_modified; origin = M.origin, rotation = M.rotation)
+    edited = Model(M.dx, M.dy, M.dz, A_modified; origin = M.origin, rotation = M.rotation, datum = M.datum)
     write_model(outputfile, edited;
         comment = "EditModelByLayers layer=$(cutoff_layer) kappa=$(target_susceptibility) blendprev=$(blend_previous_percent) linear scope=$(replace_scope)")
     return outputfile
@@ -457,6 +481,7 @@ end
 
 function EditModelByLayers(model_file::AbstractString;
     target_susceptibility::Real = 0.01,
+    mask_file::AbstractString = "",
     blend_previous_percent::Int = 0,
     log10_scale::Bool = false,
     colormap = COLORMAP,
@@ -480,6 +505,7 @@ function EditModelByLayers(model_file::AbstractString;
     println("Model loaded:")
     println("  Grid size: $(M.nx) × $(M.ny) × $(M.nz)")
     println("  Padding cells: $(M.npad)")
+    fixed = _edit_fixed_cells(model_file, M, mask_file)
 
     A_original = copy(M.A)
     A_modified = copy(M.A)
@@ -597,7 +623,8 @@ function EditModelByLayers(model_file::AbstractString;
             cutoff_layer = cutoff_value + first(parts.kz) - 1,
             target_susceptibility = target_value,
             blend_previous_percent = transition_value,
-            replace_scope = scope_value
+            replace_scope = scope_value,
+            fixed
         )
 
         refresh_viewer_data!(parts, A_modified, M;
@@ -704,7 +731,7 @@ function get_cells_in_polygon(poly_x, poly_y, cx, cy)
 end
 
 function apply_zone_modification!(A, mask, center_layer, layers_above, layers_below,
-                                   transition_layers, replacement_value, nz)
+                                   transition_layers, replacement_value, nz; fixed = nothing)
     count = 0
 
     core_start = max(1, center_layer - layers_above)
@@ -713,7 +740,7 @@ function apply_zone_modification!(A, mask, center_layer, layers_above, layers_be
     for k in core_start:core_end
         for j in 1:size(A, 2)
             for i in 1:size(A, 1)
-                if mask[i, j] && !isnan(A[i, j, k])
+                if mask[i, j] && _editable(A, fixed, i, j, k)
                     A[i, j, k] = replacement_value
                     count += 1
                 end
@@ -727,7 +754,7 @@ function apply_zone_modification!(A, mask, center_layer, layers_above, layers_be
             weight = (k - trans_above_start + 1) / (transition_layers + 1)
             for j in 1:size(A, 2)
                 for i in 1:size(A, 1)
-                    if mask[i, j] && !isnan(A[i, j, k])
+                    if mask[i, j] && _editable(A, fixed, i, j, k)
                         A[i, j, k] = (1 - weight) * A[i, j, k] + weight * replacement_value
                         count += 1
                     end
@@ -740,7 +767,7 @@ function apply_zone_modification!(A, mask, center_layer, layers_above, layers_be
             weight = 1 - (k - core_end) / (transition_layers + 1)
             for j in 1:size(A, 2)
                 for i in 1:size(A, 1)
-                    if mask[i, j] && !isnan(A[i, j, k])
+                    if mask[i, j] && _editable(A, fixed, i, j, k)
                         A[i, j, k] = (1 - weight) * A[i, j, k] + weight * replacement_value
                         count += 1
                     end
@@ -752,12 +779,12 @@ function apply_zone_modification!(A, mask, center_layer, layers_above, layers_be
     return count, core_start, core_end
 end
 
-function apply_zone_all_depths!(A, mask, replacement_value)
+function apply_zone_all_depths!(A, mask, replacement_value; fixed = nothing)
     count = 0
     for k in 1:size(A, 3)
         for j in 1:size(A, 2)
             for i in 1:size(A, 1)
-                if mask[i, j] && !isnan(A[i, j, k])
+                if mask[i, j] && _editable(A, fixed, i, j, k)
                     A[i, j, k] = replacement_value
                     count += 1
                 end
@@ -779,7 +806,7 @@ function get_depth_layer_indices(layer_depths, depth_range)
     return indices
 end
 
-function zone_editor(M_input; model_name="model", M=M_input, replacement_susceptibility=0.05,
+function zone_editor(M_input; model_name="model", M=M_input, replacement_susceptibility=0.05, fixed=nothing,
                      layers_above=2, layers_below=2, transition_layers=1,
                      apply_to_all_depths=false, depth_range=(0.0, 50000.0),
                      log10scale=false, cmap=COLORMAP, figsize=(1200, 950),
@@ -999,11 +1026,11 @@ function zone_editor(M_input; model_name="model", M=M_input, replacement_suscept
         n_cells_2d = sum(mask)
 
         if depth_toggle.active[]
-            count = apply_zone_all_depths!(A_working, mask, repl_val)
+            count = apply_zone_all_depths!(A_working, mask, repl_val; fixed)
             status_text[] = "Applied to ALL depths: $(n_cells_2d) cells × $(length(z)) layers = $(count) cells. κ = $(repl_val) SI"
         else
             count, core_start, core_end = apply_zone_modification!(
-                A_working, mask, current_layer[], n_above, n_below, n_trans, repl_val, length(z))
+                A_working, mask, current_layer[], n_above, n_below, n_trans, repl_val, length(z); fixed)
             status_text[] = "Applied: $(n_cells_2d) cells, layers $(core_start)-$(core_end) + $(n_trans) trans. κ = $(repl_val) SI"
         end
 
@@ -1097,7 +1124,7 @@ function zone_editor(M_input; model_name="model", M=M_input, replacement_suscept
         trans_tag = "tr$(n_trans)"
 
         outname = splitext(M.name)[1] * "_edited_$(kappa_tag)_$(above_tag)_$(below_tag)_$(trans_tag)_$(mode_tag).sus"
-        write_model(outname, Model(M.dx, M.dy, M.dz, A_working; origin = M.origin, rotation = M.rotation);
+        write_model(outname, Model(M.dx, M.dy, M.dz, A_working; origin = M.origin, rotation = M.rotation, datum = M.datum);
                     comment = "EditModelByDrawing kappa=$(repl_val) above=$(n_above) below=$(n_below) trans=$(n_trans) $(mode_tag)")
         save_label[] = "Saved: $(basename(outname))"
         status_text[] = "Model saved to: $outname"
@@ -1111,6 +1138,7 @@ end
 
 function EditModelByDrawing(model_file::AbstractString;
     replacement_susceptibility::Real = 0.05,
+    mask_file::AbstractString = "",
     layers_above::Int = 2,
     layers_below::Int = 2,
     transition_layers::Int = 1,
@@ -1137,6 +1165,7 @@ function EditModelByDrawing(model_file::AbstractString;
 
     println("Model loaded:")
     println("  Grid size: $(M.nx) × $(M.ny) × $(M.nz)")
+    fixed = _edit_fixed_cells(model_file, M, mask_file)
 
     model_name = splitext(basename(model_file))[1]
 
@@ -1146,6 +1175,7 @@ function EditModelByDrawing(model_file::AbstractString;
         model_name=model_name,
         M=M,
         replacement_susceptibility=replacement_susceptibility,
+        fixed=fixed,
         layers_above=layers_above,
         layers_below=layers_below,
         transition_layers=transition_layers,

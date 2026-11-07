@@ -2,6 +2,10 @@
 # Author: @pankajkmishra
 # x north, y east, z DOWN. On file: header, cell widths, one block per layer with x stored
 # backwards within each y row, then the origin (x, y, z of the first corner) and the rotation.
+# Vertical datum: z = 0 lies at `datum` m above sea level, written as the comment line
+# "# Datum elevation (m) : value". MakeMesh3D puts z = 0 at the highest ground (the top of the highest
+# earth cell); a file without the line (MT, older models) has its z = 0 at sea level.
+# Data files keep z = −elevation (sea level); a station's z on the mesh is d.z + datum.
 # Values are LINEAR susceptibility in SI; air and inactive cells are NaN in memory and AIR_VALUE
 # on file, read back as NaN above AIR_THRESHOLD, the tag the resistivity files use for air.
 
@@ -37,20 +41,21 @@ mutable struct Model
     name::String
     niter::String
     rotation::Float64         # degrees, mesh x clockwise from north
+    datum::Float64            # elevation (m a.s.l.) of z = 0
 end
 
 
 meshgrid(ax::AbstractVector, ay::AbstractVector) = (repeat(reshape(ax, 1, :), length(ay), 1), repeat(reshape(ay, :, 1), 1, length(ax)))
 
 """
-    Model(dx, dy, dz, A=zeros; origin=[-Σdx/2, -Σdy/2, 0], rotation=0, name="")
+    Model(dx, dy, dz, A=zeros; origin=[-Σdx/2, -Σdy/2, 0], rotation=0, datum=0, name="")
 
 Magnetic model on a tensor mesh, with its derived edge, centre and surface arrays.
-`A[nx, ny, nz]` is susceptibility in SI, NaN in air.
+`A[nx, ny, nz]` is susceptibility in SI, NaN in air. `datum` is the elevation (m a.s.l.) of z = 0.
 """
 function Model(dx::AbstractVector, dy::AbstractVector, dz::AbstractVector,
                A::AbstractArray{<:Real,3} = zeros(length(dx), length(dy), length(dz));
-               origin::AbstractVector = [-sum(dx)/2, -sum(dy)/2, 0.0], rotation::Real = 0.0,
+               origin::AbstractVector = [-sum(dx)/2, -sum(dy)/2, 0.0], rotation::Real = 0.0, datum::Real = 0.0,
                name::AbstractString = "", niter::AbstractString = "")
     nx, ny, nz = length(dx), length(dy), length(dz)
     all(>(0), dx) && all(>(0), dy) && all(>(0), dz) || throw(ArgumentError("cell widths must be positive"))
@@ -65,7 +70,7 @@ function Model(dx::AbstractVector, dy::AbstractVector, dz::AbstractVector,
     Xc, Yc = meshgrid(cy, cx)
     m = Model(Array{Float64}(A), collect(Float64, dx), collect(Float64, dy), collect(Float64, dz), nx, ny, nz,
               x, y, z, collect(Float64, origin), cx, cy, cz, X, Y, Xc, Yc, zeros(nx, ny), (0, 0),
-              String(name), String(niter), Float64(rotation))
+              String(name), String(niter), Float64(rotation), Float64(datum))
     m.Z = _surface(m)
     m.npad = _npad(m)
     m
@@ -93,13 +98,24 @@ air_cells(m::Model) = isnan.(m.A)
 active_cells(m::Model) = .!isnan.(m.A)
 
 function same_mesh(a::Model, b::Model)
-    a.dx == b.dx && a.dy == b.dy && a.dz == b.dz && a.origin == b.origin && a.rotation == b.rotation
+    a.dx == b.dx && a.dy == b.dy && a.dz == b.dz && a.origin == b.origin && a.rotation == b.rotation && a.datum == b.datum
 end
 
 #---------- model files ----------
 
+# the datum comment line, 0 (sea level) when absent
+function _datum(raw)
+    for l in raw
+        m = match(r"^\s*#\s*datum elevation \(m\)\s*:\s*(\S+)"i, l)
+        m === nothing || return parse(Float64, m[1])
+    end
+    0.0
+end
+
 function _model_read(path::AbstractString)
-    lines = [strip(first(split(s, '#'))) for s in readlines(path)]
+    raw = readlines(path)
+    datum = _datum(raw)
+    lines = [strip(first(split(s, '#'))) for s in raw]
     filter!(!isempty, lines)
     isempty(lines) && throw(ArgumentError("empty model file: $path"))
     h = split(popfirst!(lines))
@@ -122,7 +138,7 @@ function _model_read(path::AbstractString)
     A = reverse(reshape(v[nx+ny+nz+1:n], nx, ny, nz); dims = 1)
     linear = scale == "LINEAR" ? A : scale == "LOGE" ? exp.(A) : exp10.(A)
     linear[linear .> AIR_THRESHOLD] .= NaN
-    (; dx, dy, dz, A = linear, origin, rotation, nair, scale)
+    (; dx, dy, dz, A = linear, origin, rotation, datum, nair, scale)
 end
 
 """
@@ -135,7 +151,7 @@ function load_model(path::AbstractString)
     r = _model_read(path)
     r.scale == "LINEAR" ||
         throw(ArgumentError("susceptibility models are LINEAR; $path is $(r.scale), use load_mesh for a resistivity model"))
-    Model(r.dx, r.dy, r.dz, r.A; origin = r.origin, rotation = r.rotation, name = path)
+    Model(r.dx, r.dy, r.dz, r.A; origin = r.origin, rotation = r.rotation, datum = r.datum, name = path)
 end
 
 """
@@ -151,7 +167,7 @@ function load_mesh(path::AbstractString; value::Real = 0.0, water_log10::Real = 
     A = map(r.A) do rho
         isnan(rho) || (!isnan(water_log10) && log10(rho) < water_log10) ? NaN : Float64(value)
     end
-    Model(r.dx, r.dy, r.dz, A; origin = r.origin, rotation = r.rotation, name = path)
+    Model(r.dx, r.dy, r.dz, A; origin = r.origin, rotation = r.rotation, datum = r.datum, name = path)
 end
 
 # top layers made of air only
@@ -162,7 +178,7 @@ _top_air_layers(A) = something(findfirst(k -> !all(isnan, view(A, :, :, k)), axe
 
 Write a susceptibility model file: header, cell widths, one block per layer with x running
 backwards within each y row, then origin and rotation. Values are LINEAR SI; NaN cells are
-written as $(AIR_VALUE).
+written as $(AIR_VALUE). The datum is written as the line "# Datum elevation (m) : value".
 """
 function write_model(path::AbstractString, m::Model; nzAir::Integer = _top_air_layers(m.A),
                            comment::AbstractString = "")
@@ -173,6 +189,7 @@ function write_model(path::AbstractString, m::Model; nzAir::Integer = _top_air_l
     open(path, "w") do io
         println(io, "# Written by MagneticGeophysics.jl write_model (susceptibility, SI)",
                 isempty(comment) ? "" : " -- " * comment)
+        println(io, "# Datum elevation (m) : ", m.datum)
         @printf(io, "%d %d %d %d LINEAR\n", m.nx, m.ny, m.nz, nzAir)
         for w in (m.dx, m.dy, m.dz)
             for v in w; print(io, v, " "); end; println(io)

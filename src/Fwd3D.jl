@@ -117,6 +117,7 @@ struct MagForward
     m::Model
     d::Data
     cells::Vector{CartesianIndex{3}}
+    zs::Vector{Float64}                   # station z on the mesh (d.z + m.datum)
     q::Vector{Functional}
     solver::Symbol
     G::Vector{Matrix{Float64}}            # one per functional; empty for :matrixfree
@@ -127,7 +128,7 @@ function MagForward(m::Model, d::Data; solver::Symbol = :dense)
     check_frame(d, m)
     cells = findall(active_cells(m))
     q = functionals(d)
-    op = MagForward(m, d, cells, q, solver, Matrix{Float64}[])
+    op = MagForward(m, d, cells, _mesh_z(d, m), q, solver, Matrix{Float64}[])
     if solver == :dense
         bytes = 8.0 * ndata(d) * length(cells) * length(q)
         bytes > 0.8 * Sys.total_memory() &&
@@ -155,7 +156,7 @@ function _foreach_row(f, op::MagForward, k::Int)
             S = Array{Float64,3}(undef, m.nx + 1, m.ny + 1, m.nz + 1)
             row = Vector{Float64}(undef, length(op.cells))
             for n in chunk
-                _node_values!(S, m, d.x[n], d.y[n], d.z[n], op.q[k])
+                _node_values!(S, m, d.x[n], d.y[n], op.zs[n], op.q[k])
                 f(n, _row!(row, S, op.cells, d.F))
             end
         end
@@ -186,7 +187,7 @@ function _gtw(op::MagForward, k::Int, w::AbstractVector)
             row = Vector{Float64}(undef, ncells(op))
             a = acc[t]
             for n in chunk
-                _node_values!(S, m, d.x[n], d.y[n], d.z[n], op.q[k])
+                _node_values!(S, m, d.x[n], d.y[n], op.zs[n], op.q[k])
                 _row!(row, S, op.cells, d.F)
                 a .+= w[n] .* row
             end

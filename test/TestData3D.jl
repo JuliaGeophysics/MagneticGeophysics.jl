@@ -165,3 +165,17 @@ end
     @test check_frame(r, mr) === nothing
     @test r.x[1] ≈ 1000cosd(30) && r.y[1] ≈ -1000sind(30)
 end
+
+@testset "stations on a mesh with a datum" begin
+    f = flat_model()
+    m = Model(f.dx, f.dy, f.dz, f.A; origin = f.origin, datum = 250.0)        # ground at 250 m a.s.l.
+    p = joinpath(mktempdir(), "s.csv")
+    cols = (north = "n", east = "e", elevation = "z", value = "v", error = "s")
+    write(p, "n,e,z,v,s\n500,500,200,1,1\n")                                   # 200 m a.s.l.: under the ground
+    d = load_data_mag(p; field = (5e4, 70.0, 0.0), columns = cols)
+    @test_throws ArgumentError check_frame(d, m)
+    @test check_frame(d, f) === nothing                                          # above a sea-level ground
+    drape!(d, m, 30.0)
+    @test d.z == [-280.0]                                                        # the file keeps z = −elevation
+    @test check_frame(d, m) === nothing
+end

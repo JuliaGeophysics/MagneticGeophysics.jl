@@ -220,7 +220,7 @@ function _colsq(op::MagForward, k::Int, s::AbstractVector)
             S = Array{Float64,3}(undef, m.nx + 1, m.ny + 1, m.nz + 1)
             row = Vector{Float64}(undef, ncells(op))
             for n in chunk
-                _node_values!(S, m, d.x[n], d.y[n], d.z[n], op.q[k])
+                _node_values!(S, m, d.x[n], d.y[n], op.zs[n], op.q[k])
                 _row!(row, S, op.cells, d.F)
                 acc[t] .+= s[n] .* row .^ 2
             end
@@ -242,7 +242,7 @@ function _weights(op::MagForward, jtj, var, opt::Inv3DOptions)
         w = sqrt.(jtj[var])
     else
         # depth of the cell centre below the mean station height, at least half its thickness
-        zs = sum(op.d.z) / ndata(op.d)
+        zs = sum(op.zs) / ndata(op.d)
         w = [max(op.m.cz[op.cells[c][3]] - zs, op.m.dz[op.cells[c][3]] / 2)^(-opt.depth_exponent) for c in var]
     end
     w ./= maximum(w)
@@ -269,6 +269,9 @@ function Inv3DProblem(op::MagForward, opt::Inv3DOptions = Inv3DOptions(); start:
     all(isfinite, lo) && all(isfinite, hi) && all(lo .<= hi) ||
         throw(ArgumentError("per-cell bounds must be finite with lower ≤ upper"))
     κ = Float64.(start); κ[var] .= clamp.(κ[var], lo, hi)
+    # |B| has no derivative where it is 0: the Jacobian there is 0/0
+    op.d.component == :amplitude && any(iszero, forward(op, κ)) &&
+        throw(ArgumentError("amplitude data need a start model with |B| > 0 at every station; start from a small susceptibility, e.g. 1e-4"))
     jtj = _jtj_diag(op, κ, op.d.error)
     w = _weights(op, jtj, var, opt)
     W = [_differences(op.m, op.cells, var, w, i) for i in 1:3]
@@ -431,7 +434,7 @@ function Invert3D(m::Model, d::Data; algorithm::AbstractInversion3D = LSQR3DConf
     end
 
     κ = _full(P, x)
-    model = Model(m.dx, m.dy, m.dz, model_array(op, κ); origin = m.origin, rotation = m.rotation)
+    model = Model(m.dx, m.dy, m.dz, model_array(op, κ); origin = m.origin, rotation = m.rotation, datum = m.datum)
     Inv3DResult(model, forward(op, κ), history[end].rms, history, op.cells[P.var],
                 reason ∉ (:max_iter, :line_search_failed), reason, algorithm, P)
 end

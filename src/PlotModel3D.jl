@@ -1388,18 +1388,19 @@ function model_3d_viewer(
     # Overlay elevations (z up). overlay_z_fixed puts every overlay on one plane; otherwise
     # sites keep their own elevation, shapefiles drape on the earth surface (surface_elev on
     # the x_all × y_all cell centres; flat models give 0) and annotations sit on its highest point.
-    # the scene is z up with 0 at the top of the topography: an elevation e sits at e + z_top
-    model_top = isnothing(surface_elev) ? -ze_all[first(kz)] : Float64(maximum(surface_elev)) + z_top
-    annot_z = isnothing(overlay_z_fixed) ? model_top : Float64(overlay_z_fixed) + z_top
+    # the scene is z up with 0 at the top of the topography: an elevation e (m a.s.l.) sits at e + z_top − datum
+    z_elev = z_top - M.datum
+    model_top = isnothing(surface_elev) ? -ze_all[first(kz)] : Float64(maximum(surface_elev)) + z_elev
+    annot_z = isnothing(overlay_z_fixed) ? model_top : Float64(overlay_z_fixed) + z_elev
     overlay_z_at = if isnothing(overlay_z_fixed) && !isnothing(surface_elev)
-        (xq, yq) -> Float64(surface_elev[argmin(abs.(x_all .- xq)), argmin(abs.(y_all .- yq))]) + z_top
+        (xq, yq) -> Float64(surface_elev[argmin(abs.(x_all .- xq)), argmin(abs.(y_all .- yq))]) + z_elev
     else
         nothing
     end
     site_zv = if !isnothing(overlay_z_fixed) || length(site_z) != length(site_e)
         fill(annot_z, length(site_e))
     else
-        site_z .+ z_top
+        site_z .+ z_elev
     end
 
     # GLMakie draws plots in order of their z translation, so the XY slice (translated to its elevation) is drawn
@@ -2118,7 +2119,8 @@ function PlotModelXYZ(model_file::AbstractString, data_file::AbstractString;
         cx = x_target,
         cy = y_target,
         cz = M.cz,
-        z = M.z
+        z = M.z,
+        datum = M.datum
     )
 
     println("Model dimensions: $(size(M.A))")
@@ -2161,7 +2163,7 @@ function PlotModelXYZ(model_file::AbstractString, data_file::AbstractString;
         site_e = collect(Float64.(station_tx)),
         site_n = collect(Float64.(station_ty)),
         site_z = collect(Float64.(-d.z)),
-        surface_elev = -permutedims(M.Z),
+        surface_elev = M.datum .- permutedims(M.Z),
         shapefile_path = shapefile_path,
         overlay_z_fixed = overlay_z_fixed,
         overlay_auto_reproject_to_wgs84 = overlay_auto_reproject_to_wgs84,

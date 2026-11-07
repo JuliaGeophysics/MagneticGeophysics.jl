@@ -41,6 +41,18 @@ end
     @test r.cz[1] == -200
 end
 
+@testset "datum" begin
+    m = demo_model()
+    @test m.datum == 0.0
+    e = Model(m.dx, m.dy, m.dz, m.A; origin = m.origin, rotation = m.rotation, datum = 312.5)
+    path = write_model(joinpath(mktempdir(), "datum.sus"), e)
+    @test "# Datum elevation (m) : 312.5" in readlines(path)
+    r = load_model(path)
+    @test r.datum == 312.5 && same_mesh(e, r) && !same_mesh(m, r)
+    @test load_mesh(path).datum == 312.5
+    @test load_mesh(joinpath(DATA, "resistivity.rho")).datum == 0.0          # no datum line: z = 0 at sea level
+end
+
 @testset "resistivity file supplies the mesh" begin
     path = joinpath(DATA, "resistivity.rho")
     r = MagneticGeophysics._model_read(path)

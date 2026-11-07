@@ -539,6 +539,7 @@ function build_mesh_bundle(d, sx, sy;
     end
     site_ground = _site_ground_report((; base..., A = A), d)
     return (; base..., A = A, mask = .!isnan.(A) .& .!water, water = water, nlakes = length(lakes),
+              rotation = Float64(d.azimuth),                  # the mesh is laid out in the data frame
               topo_active = use_topo || surface !== nothing,
               topo_name = use_topo ? basename(topo_path) : surface !== nothing ? "surface function" : "flat",
               surface_local = surface_local,
@@ -549,9 +550,16 @@ end
 """
     mesh_model(m) -> Model
 
-The start model of a mesh bundle (`MakeMesh3D`, `build_mesh_bundle`) as a `Model`.
+The start model of a mesh bundle (`MakeMesh3D`, `build_mesh_bundle`) as a `Model`, with z = 0 at the highest
+ground: the top of the highest earth cell, whose elevation becomes the model's `datum`. The bundle itself is in
+the frame of the data (z = −elevation).
 """
-mesh_model(m) = Model(m.dx, m.dy, m.dz, m.A; origin = m.origin)
+function mesh_model(m)
+    k = something(findfirst(k -> any(!isnan, view(m.A, :, :, k)), 1:m.nz), 1)
+    ztop = m.origin[3] + sum(m.dz[1:k-1]; init = 0.0)                 # top of the highest earth cell, z = −elevation
+    Model(m.dx, m.dy, m.dz, m.A; origin = [m.origin[1], m.origin[2], m.origin[3] - ztop], rotation = m.rotation,
+          datum = -ztop)
+end
 
 # no station may lie below the level of the lake under it (a station over water flies above it)
 function _check_stations_above_water(m, d, level)

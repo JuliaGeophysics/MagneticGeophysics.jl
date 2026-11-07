@@ -36,3 +36,28 @@ end
     out = only(filter(f -> occursin("_edited_kappa0.07", f), readdir(dir)))
     @test isequal(load_model(joinpath(dir, out)).A, A)
 end
+
+@testset "editors keep lake water" begin
+    m = demo_model()
+    dir = mktempdir()
+    W = falses(size(m.A)); W[3, 2:3, 3] .= true                       # two water cells in the edited column
+    m.A[W] .= 0.0                                                      # water is non-magnetic
+    p = write_model(joinpath(dir, "start.sus"), m); m = load_model(p)
+    write_mask(joinpath(dir, "start.mask"), m, active_cells(m) .& .!W; water = W)     # found beside the model
+    fig, parts, st = EditModelByLayers(p; target_susceptibility = 0.03, interactive = false)
+    set_close_to!(parts.slider, 2)
+    st.apply!()
+    deep = falses(size(m.A)); deep[:, :, 2:end] .= true                # layers 2 and below are replaced
+    @test all(st.A_modified[W] .== 0.0) && all(v -> v == 0.03, filter(!isnan, st.A_modified[deep .& .!W]))
+    fig, parts = EditModelByDrawing(p; replacement_susceptibility = 0.07, interactive = false)
+    yl, yh = m.cy[2] - 1, m.cy[3] + 1; xl, xh = m.cx[3] - 1, m.cx[3] + 1
+    parts.polygon_points[] = MG.Point2f[(yl, xl), (yh, xl), (yh, xh), (yl, xh)]
+    parts.depth_toggle.active[] = true
+    notify(parts.apply_button.clicks)
+    A = parts.A_working
+    @test all(A[W] .== 0.0) && all(v -> v == 0.07, filter(!isnan, A[3, 2:3, :][.!W[3, 2:3, :]]))
+    # an explicit mask of another mesh is an error; one found beside the model is skipped
+    other = Model(m.dx[2:end], m.dy, m.dz; origin = m.origin)
+    q = write_mask(joinpath(dir, "other.mask"), other, active_cells(other))
+    @test_throws ArgumentError EditModelByLayers(p; mask_file = q, interactive = false)
+end

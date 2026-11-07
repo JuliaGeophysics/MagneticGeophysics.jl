@@ -1,5 +1,5 @@
-# Case figures: depth slice and east-west / north-south sections through the largest κ of the true (synthetic) or LS
-# model; a map and a sections figure per model: true and LSQR
+# Case figures: depth slice and east-west / north-south sections through the centre of the body (the true model's for
+# a synthetic, else the first recovered model's); a map and a sections figure per model: true and LSQR
 # Author: @pankajkmishra
 # Map view: easting horizontal, northing vertical, in km about the frame centre. Sections at true scale, depth (km)
 # positive down from 0 at the top of the topography (the highest active cell of the core); thick black line: top of
@@ -7,7 +7,9 @@
 # along cell edges. Recovered models share one colour range. Only the core (no padding) is shown.
 # Runs: the newest run_*/ of each algorithm in the case directory (from its 0<algorithm>.log).
 # Writes figures/<case>_3_models_<n>_<model>_map.png and _sections.png (two sections stacked) in the case directory.
-# Usage: julia --project=. helpers/plot_models_3D.jl [case_dir [max_depth_m]]   (default examples/synthetic, 500 m)
+# The body: the connected cells (faces shared) of at least half the largest κ in the core that hold the largest; the
+# slice and the sections pass through its centre of mass. Sections reach 1.5 × the depth of its base, or max_depth_m.
+# Usage: julia --project=. helpers/plot_models_3D.jl [case_dir [max_depth_m]]   (default examples/synthetic)
 
 using MagneticGeophysics
 using CairoMakie
@@ -27,7 +29,7 @@ end
 
 const DIR = abspath(isempty(ARGS) ? joinpath(dirname(@__DIR__), "examples", "synthetic") : ARGS[1])
 const NAME = basename(rstrip(DIR, '/'))
-const MAX_DEPTH = length(ARGS) >= 2 ? parse(Float64, ARGS[2]) : 500.0   # shown below the lowest ground of the core (m)
+const MAX_DEPTH = length(ARGS) >= 2 ? parse(Float64, ARGS[2]) : nothing # shown below the lowest ground of the core (m)
 const W = 460                                                           # width of a map panel (px)
 out(k, what) = joinpath(mkpath(joinpath(DIR, "figures")), "$(NAME)_$(k)_$(what).png")
 
@@ -56,18 +58,34 @@ rec = truth ? panels[2:end] : panels
 ix, iy = (start.npad[1] + 1):(start.nx - start.npad[1]), (start.npad[2] + 1):(start.ny - start.npad[2])
 topk = [something(findfirst(k -> !isnan(start.A[i, j, k]), 1:start.nz), start.nz) for i in 1:start.nx, j in 1:start.ny]
 z0 = minimum(start.z[topk[ix, iy]])                                    # top of the topography: depth 0
-kz = searchsortedlast(start.z, z0):min(start.nz, searchsortedlast(start.z, maximum(start.z[topk[ix, iy]]) + MAX_DEPTH))
+
+# the body of the reference model: cells of the core of at least half its largest κ, connected to the largest
+ref = last(first(panels))
+C = fill(-Inf, size(ref.A)); C[ix, iy, :] .= replace(ref.A[ix, iy, :], NaN => -Inf)
+seed = argmax(C)
+inbody = C .>= C[seed] / 2
+body = falses(size(C)); body[seed] = true
+stack = [seed]
+while !isempty(stack)
+    c = pop!(stack)
+    for s in (CartesianIndex(1, 0, 0), CartesianIndex(0, 1, 0), CartesianIndex(0, 0, 1))
+        for n in (c + s, c - s)
+            checkbounds(Bool, C, n) && inbody[n] && !body[n] && (body[n] = true; push!(stack, n))
+        end
+    end
+end
+cells = findall(body)
+vol(c) = start.dx[c[1]] * start.dy[c[2]] * start.dz[c[3]]
+centre(axis, c) = (start.cx, start.cy, start.cz)[axis][c[axis]]
+com = [sum(vol(c) * centre(a, c) for c in cells) / sum(vol, cells) for a in 1:3]
+I = (argmin(abs.(start.cx .- com[1])), argmin(abs.(start.cy .- com[2])), argmin(abs.(start.cz .- com[3])))
+zbase = maximum(start.z[c[3] + 1] for c in cells) - z0                  # depth of the base of the body
+reach = something(MAX_DEPTH, 1.5 * zbase)
+kz = searchsortedlast(start.z, z0):min(start.nz, searchsortedlast(start.z, maximum(start.z[topk[ix, iy]]) + reach))
 edges(e, r) = e[first(r):last(r)+1]
 he, hn, ve = edges(start.y, iy) ./ 1000, edges(start.x, ix) ./ 1000, (edges(start.z, kz) .- z0) ./ 1000
-
-# depth slice: the layer of the core with the most anomalous earth cells of the true model (of the largest summed κ of
-# the first recovered model for field data); sections through the largest value of that layer
-ref = last(first(panels))
-core(k) = filter(isfinite, vec(ref.A[ix, iy, k]))
-score(k) = truth ? count(>(0), core(k)) : sum(core(k); init = 0.0)
-ks = argmax(k -> score(k), collect(kz))
-J = argmax(replace(ref.A[:, :, ks], NaN => -Inf))
-I = (J[1], J[2], ks)
+@printf("body: %d cells, centre northing %.0f m, easting %.0f m, depth %.0f m; base %.0f m\n", length(cells),
+        com[1], com[2], com[3] - z0, zbase)
 depth(k) = (start.z[k] - z0, start.z[k+1] - z0)
 @printf("slice point: northing %.0f m, easting %.0f m, depth slice %.0f–%.0f m\n", start.cx[I[1]], start.cy[I[2]], depth(I[3])...)
 

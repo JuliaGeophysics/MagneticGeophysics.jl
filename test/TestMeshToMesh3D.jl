@@ -32,4 +32,20 @@
     dl = load_data_mag(lin.data)
     @test all(dl.z .≈ 25.0 - 5.0) || all(isapprox.(dl.z, ml.Z[MG._column_index(ml, d.x[1], d.y[1])...] - 5.0))
     @test_throws ErrorException MeshToMesh(sp, dp, joinpath(dir, "missing.rho"))
+    # a source with a datum keeps each value at its elevation
+    lay = Model(src.dx, src.dy, src.dz, src.A .+ reshape(0.001 .* (1:6), 1, 1, 6); origin = src.origin)
+    up = Model(lay.dx, lay.dy, lay.dz, lay.A; origin = lay.origin .+ [0, 0, 100.0], datum = 100.0)
+    a = MeshToMesh(write_model(joinpath(dir, "lay.sus"), lay), dp, joinpath(dir, "fine.rho"); outdir = joinpath(dir, "a"))
+    b = MeshToMesh(write_model(joinpath(dir, "up.sus"), up), dp, joinpath(dir, "fine.rho"); outdir = joinpath(dir, "b"))
+    @test isequal(load_model(b.model).A, load_model(a.model).A) && b.cells_outside_source == 0
+    # a target turned 90°: a body 300 m north of the centre lies at y′ = −300 m in its frame, and so do the stations
+    body = Model(src.dx, src.dy, src.dz; origin = src.origin)
+    body.A[7:8, 4:5, :] .= 0.02                                  # x 200–400 m (north), y −100–100 m
+    turned = Model(src.dx, src.dy, src.dz; origin = src.origin, rotation = 90.0)
+    rt = MeshToMesh(write_model(joinpath(dir, "body.sus"), body), dp, write_model(joinpath(dir, "turned.sus"), turned);
+                    outdir = joinpath(dir, "turned"))
+    mt = load_model(rt.model)
+    @test all(mt.A[4:5, 1:2, :] .== 0.02) && count(>(0), mt.A) == 2 * 2 * 6   # x′ −100–100 m, y′ −400–−200 m
+    dt = load_data_mag(rt.data)
+    @test dt.azimuth == 90.0 && dt.x ≈ d.y && dt.y ≈ -d.x
 end

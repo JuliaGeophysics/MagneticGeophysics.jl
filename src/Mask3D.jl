@@ -152,7 +152,7 @@ water_mask(path::AbstractString, m::Model) = (_mask_values(path, m) .== 9) .& ac
 function _mask_values(path::AbstractString, m::Model)
     r = _model_read(path)
     r.scale == "LINEAR" || throw(ArgumentError("mask files are LINEAR; $path is $(r.scale)"))
-    mask = Model(r.dx, r.dy, r.dz, r.A; origin = r.origin, rotation = r.rotation)
+    mask = Model(r.dx, r.dy, r.dz, r.A; origin = r.origin, rotation = r.rotation, datum = r.datum)
     same_mesh(m, mask) || throw(ArgumentError("mask and model meshes differ"))
     all(v -> isnan(v) || v == 0 || v == 1 || v == 9, mask.A) ||
         throw(ArgumentError("mask values must be 0 (fixed), 1 (variable) or 9 (water)"))
@@ -170,6 +170,6 @@ function write_mask(path::AbstractString, m::Model, variable::AbstractArray{Bool
     size(variable) == size(water) == size(m.A) || throw(ArgumentError("mask size differs from mesh"))
     any(variable .& water) && throw(ArgumentError("a water cell cannot be variable"))
     A = [isnan(m.A[I]) ? NaN : water[I] ? 9.0 : Float64(variable[I]) for I in CartesianIndices(m.A)]
-    mask = Model(m.dx, m.dy, m.dz, A; origin = m.origin, rotation = m.rotation)
+    mask = Model(m.dx, m.dy, m.dz, A; origin = m.origin, rotation = m.rotation, datum = m.datum)
     write_model(path, mask; comment = "mask: 1 variable, 0 fixed, 9 water")
 end

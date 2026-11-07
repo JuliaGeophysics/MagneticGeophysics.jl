@@ -59,6 +59,18 @@ end
     op = MagForward(model, d)
     @test length(forward(op, fill(0.01, length(op.cells)))) == ndata(d)
     @test check_frame(d, model) === nothing
+    # z = 0 at the highest ground, the data file frame kept
+    @test minimum(model.Z) ≈ 0 atol = 1e-9
+    @test model.z ≈ m.z_edges .+ model.datum
+    sea = Model(m.dx, m.dy, m.dz, m.A; origin = m.origin)                       # the bundle frame, z = 0 at sea level
+    @test forward(op, fill(0.01, length(op.cells))) ≈ forward(MagForward(sea, d), fill(0.01, length(op.cells))) rtol = 1e-10
+end
+
+@testset "rotated data give a rotated mesh" begin
+    r = rotate_data(grid_data(), 30.0)
+    model = MG.mesh_model(bundle(r))
+    @test model.rotation == 30.0
+    @test check_frame(r, model) === nothing
 end
 
 @testset "GeoTIFF topography" begin

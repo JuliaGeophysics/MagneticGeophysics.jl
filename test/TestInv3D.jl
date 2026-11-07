@@ -16,6 +16,14 @@ function block_problem(c = :tmi; noise = 0.02, seed = 3)
     m, d, true_A
 end
 
+@testset "amplitude from a zero start is refused" begin
+    m, d, _ = block_problem(:amplitude)
+    op = MagForward(m, d)
+    @test_throws ArgumentError Inv3DProblem(op, Inv3DOptions(); start = zeros(length(op.cells)))   # |B| = 0: no Jacobian
+    P = Inv3DProblem(op, Inv3DOptions(); start = fill(1e-4, length(op.cells)))
+    @test all(isfinite, P.jtj)
+end
+
 @testset "control files" begin
     dir = mktempdir()
     f = FwdCtrl3D(solver = :matrixfree)

@@ -11,6 +11,17 @@ function small_problem(c; seed = 1)
     m, d, κ
 end
 
+@testset "datum moves the mesh, not the stations" begin
+    m, d, κ = small_problem(:tmi)
+    s = Model(m.dx, m.dy, m.dz, m.A; origin = m.origin .+ [0, 0, 120.0], datum = 120.0)   # the same earth
+    a, b = MagForward(m, d), MagForward(s, d)
+    @test b.zs ≈ d.z .+ 120
+    @test forward(b, κ) ≈ forward(a, κ) rtol = 1e-12
+    opt = Inv3DOptions(weighting = :depth)
+    var = 1:length(a.cells)
+    @test MG._weights(b, nothing, var, opt) ≈ MG._weights(a, nothing, var, opt)
+end
+
 @testset "dense = matrix-free, adjoint" begin
     for c in COMPONENTS
         m, d, κ = small_problem(c)

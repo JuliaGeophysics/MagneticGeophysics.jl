@@ -101,7 +101,13 @@ function project_model_data(src_model::AbstractString, src_data::AbstractString,
     dst_air = isnan.(dst.A)
     usable = .!src_air                       # never pull a value out of the air
 
-    sx, sy, sz = src.x, src.y, src.z
+    # target cell centre (x, y) in the source frame: turned back by the difference of the rotations (Rotate.jl)
+    Δ = dst.rotation - src.rotation
+    cΔ, sΔ = cosd(Δ), sind(Δ)
+    # source z in the target's frame: the same elevation, z = datum − elevation
+    shift = dst.datum - src.datum
+    sx, sy, sz = src.x, src.y, src.z .+ shift
+    scz = src.cz .+ shift
 
     A = similar(dst.A)
     n_outside = 0
@@ -111,12 +117,12 @@ function project_model_data(src_model::AbstractString, src_data::AbstractString,
         if dst_air[i, j, k]
             A[i, j, k] = NaN; n_kept += 1; continue
         end
-        x, y, z = dst.cx[i], dst.cy[j], dst.cz[k]
+        x, y, z = cΔ * dst.cx[i] - sΔ * dst.cy[j], sΔ * dst.cx[i] + cΔ * dst.cy[j], dst.cz[k]
         outside = x < sx[1] || x > sx[end] || y < sy[1] || y > sy[end] ||
                   z < sz[1] || z > sz[end]
         outside && (n_outside += 1)
         v = if method === :linear && !outside
-            _interp_linear(src.A, src.cx, src.cy, src.cz, x, y, z, usable)
+            _interp_linear(src.A, src.cx, src.cy, scz, x, y, z, usable)
         else
             NaN
         end
@@ -137,12 +143,13 @@ function project_model_data(src_model::AbstractString, src_data::AbstractString,
     data_out  = joinpath(outdir, dstem * "-W" * (isempty(dext) ? ".dat" : dext))
     mask_out  = joinpath(outdir, stem * ".mask")
 
-    projected = Model(dst.dx, dst.dy, dst.dz, A; origin = dst.origin, rotation = dst.rotation)
+    projected = Model(dst.dx, dst.dy, dst.dz, A; origin = dst.origin, rotation = dst.rotation, datum = dst.datum)
     write_model(model_out, projected; comment = "$(basename(src_model)) projected onto $(basename(dst_mesh))")
     write_mask(mask_out, projected, .!dst_air)
 
     #---------- stations onto the target mesh ----------
     d = load_data_mag(src_data)
+    rem(dst.rotation - d.azimuth, 360, RoundNearest) == 0 || (d = rotate_data(d, dst.rotation - d.azimuth))
     z_old = copy(d.z)
     off = count(n -> d.x[n] < dst.x[1] || d.x[n] > dst.x[end] || d.y[n] < dst.y[1] || d.y[n] > dst.y[end], 1:ndata(d))
     snap_sites && drape!(d, projected, clearance)

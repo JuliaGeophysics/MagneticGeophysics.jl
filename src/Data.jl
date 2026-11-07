@@ -409,6 +409,9 @@ end
 
 #---------- mesh ----------
 
+# station z on the mesh of `m`: data files keep z = −elevation, the mesh has z = 0 at m.datum (m a.s.l.)
+_mesh_z(d::Data, m::Model) = d.z .+ m.datum
+
 # column (i, j) of the mesh holding station (x, y); nothing outside the mesh
 function _column_index(m::Model, x::Real, y::Real)
     (m.x[1] <= x <= m.x[end] && m.y[1] <= y <= m.y[end]) || return nothing
@@ -434,7 +437,7 @@ function drape!(d::Data, m::Model, height)
     for n in 1:ndata(d)
         c = _column_index(m, d.x[n], d.y[n])
         c === nothing && throw(ArgumentError("station $(d.code[n]) lies outside the mesh"))
-        d.z[n] = m.Z[c...] - h[n]
+        d.z[n] = m.Z[c...] - h[n] - m.datum
     end
     d
 end
@@ -450,13 +453,14 @@ function check_frame(d::Data, m::Model)
         throw(ArgumentError(@sprintf("data frame azimuth %.4f° differs from the mesh rotation %.4f°; use rotate_data(d, %.4f)",
                                      d.azimuth, m.rotation, m.rotation - d.azimuth)))
     outside = 0; below = 0; onface = 0
+    z = _mesh_z(d, m)
     for n in 1:ndata(d)
         c = _column_index(m, d.x[n], d.y[n])
         c === nothing && (outside += 1; continue)
-        d.z[n] < m.Z[c...] || (below += 1; continue)
+        z[n] < m.Z[c...] || (below += 1; continue)
         # on a vertical mesh plane, the station must also be above the columns on the other side
         I = _touching_columns(m, d.x[n], d.y[n])
-        any(ij -> d.z[n] >= m.Z[ij...], I) && (onface += 1)
+        any(ij -> z[n] >= m.Z[ij...], I) && (onface += 1)
     end
     outside == 0 || throw(ArgumentError("$outside stations lie outside the mesh"))
     below == 0 || throw(ArgumentError("$below stations are not above the earth cells; drape them with drape!(d, m, height)"))
