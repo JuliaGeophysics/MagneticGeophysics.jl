@@ -1,0 +1,20 @@
+# Generated case inputs, run directories and figures (helpers/benchmarks_3D.jl, examples/*.jl)
+examples/synthetic/*.dat
+examples/synthetic/model.*
+examples/*/*.pred
+examples/*/DataFit.png
+mesh_start_model.*
+run_*/
+figures/
+
+# Local example, not shared
+examples/KDISynthetic/
+
+# Julia artifacts
+*.jl.cov
+*.jl.mem
+Manifest.toml
+
+# OS files
+.DS_Store
+Thumbs.db
